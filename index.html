@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (提示音版)</title>
+    <title>20以内口算语音挑战 (Continuous模式)</title>
     <style>
+        /* (CSS样式保持不变，此处省略以节省篇幅) */
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f0f4f8;
@@ -157,6 +158,7 @@
     let recognition = null; 
     let audioCtx = null; 
     let micStartTimer = null; 
+    let currentRecognitionStarted = false; // 标志位，用于避免重复启动
 
     // 中文数字映射
     const cnNums = {
@@ -178,28 +180,52 @@
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
             recognition.lang = 'zh-CN';
-            recognition.continuous = false;
             recognition.interimResults = false;
             recognition.maxAlternatives = 1;
 
+            // 【关键优化 1】: 启用持续监听模式
+            recognition.continuous = true; 
+
             recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript;
-                processVoiceInput(transcript);
+                // 在 Continuous 模式下，每次有结果时，会返回所有已识别片段
+                // 我们只需要处理最新的一个或最终结果
+                let finalTranscript = '';
+                // 遍历结果集，找到最终结果 (isFinal = true)
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                        processVoiceInput(finalTranscript);
+                        // 发现最终结果后，我们应立即停止监听，以防识别下一题的答案
+                        stopListening();
+                        break; 
+                    }
+                }
             };
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
+                // 仅显示非 'no-speech' 错误
                 if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
                      document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
                 }
             };
             
+            // 【关键优化 3】: 在 continuous 模式下，onend 意味着整个 session 结束或出错
+            // 此时不应进行自动重启，而是等待 nextQuestion 明确调用 startListening
             recognition.onend = function() {
+                console.log("Recognition ended. Ready for next start.");
+                currentRecognitionStarted = false;
+                // 仅在计时器运行中，才显示提示，否则说明是正常结束
                 if (isListening && timeLeft > 0) {
-                    clearTimeout(micStartTimer);
-                    const restartDelay = isMobileDevice() ? 200 : 100;
-                    micStartTimer = setTimeout(startListening, restartDelay); 
+                     document.getElementById('mic-status').innerText = "🎙️ 监听意外中断，请重试";
                 }
+                isListening = false;
+            };
+
+            recognition.onstart = function() {
+                currentRecognitionStarted = true;
+                document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
+                playReadyTone(); // 确保在真正启动后才播放提示音
             };
 
         } else {
@@ -208,7 +234,39 @@
         }
     }
 
-    /** 🔊 播放开始回答提示音 */
+    /** 停止麦克风监听 */
+    function stopListening() {
+        if (!recognition || !currentRecognitionStarted) return;
+        try {
+            recognition.stop();
+            currentRecognitionStarted = false; // 标记已停止
+            isListening = false;
+        } catch(e) {
+             console.log("Error stopping recognition:", e);
+        }
+    }
+
+    /** 尝试启动麦克风 */
+    function startListening() {
+        if (!recognition) return;
+        if (currentRecognitionStarted) return; // 如果已经在听，不重复启动
+
+        isListening = true;
+        document.getElementById('user-input').innerText = "👂 正在听... 请回答";
+        
+        try {
+            // 【关键优化 4】: 在开始前清理所有延时，防止冲突
+            clearTimeout(micStartTimer); 
+            recognition.start();
+        } catch(e) {
+            if (e.name !== 'InvalidStateError') {
+                console.error("Failed to start recognition:", e);
+                document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
+            }
+        }
+    }
+
+    /** 播放开始回答提示音 */
     function playReadyTone() {
         if (!audioCtx) initAudio();
         const now = audioCtx.currentTime;
@@ -221,32 +279,12 @@
         gainNode.connect(audioCtx.destination);
 
         oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(1200, now); // 高频提示音
+        oscillator.frequency.setValueAtTime(1200, now);
         gainNode.gain.setValueAtTime(0.3, now);
         gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
         oscillator.start(now);
         oscillator.stop(now + duration);
-    }
-
-    // 尝试启动麦克风
-    function startListening() {
-        if (!recognition) return;
-        isListening = true;
-        document.getElementById('user-input').innerText = "👂 正在听... 请回答";
-        document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
-        
-        // 【新功能】: 播放提示音
-        playReadyTone();
-
-        try {
-            recognition.start();
-        } catch(e) {
-            if (e.name !== 'InvalidStateError') {
-                console.error("Failed to start recognition:", e);
-                document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
-            }
-        }
     }
 
     // ================= 语音朗读 (Text-to-Speech) =================
@@ -262,17 +300,15 @@
             utterance.lang = 'zh-CN';
             
             utterance.onend = () => {
-                clearTimeout(micStartTimer);
                 micStartTimer = setTimeout(startListening, delay); 
             };
             utterance.onerror = () => {
-                clearTimeout(micStartTimer);
                 micStartTimer = setTimeout(startListening, delay);
             };
 
             window.speechSynthesis.speak(utterance);
         } else {
-            startListening();
+            micStartTimer = setTimeout(startListening, delay);
         }
     }
 
@@ -330,7 +366,7 @@
             });
         }
     }
-    // ================= 核心逻辑 (保持与上一个版本一致) =================
+    // ================= 核心逻辑 =================
 
     function parseNumber(str) {
         str = str.replace(/[。，？！]/g, '');
@@ -386,9 +422,9 @@
 
         currentQuestionIndex++;
         
-        isListening = false;
+        // 【关键】: 停止上一轮所有流程
+        stopListening();
         clearTimeout(micStartTimer);
-        try { recognition.stop(); } catch(e) {}
         window.speechSynthesis.cancel();
 
         document.getElementById('main-box').style.backgroundColor = 'white';
@@ -431,6 +467,7 @@
         let userVal = parseNumber(transcript);
         document.getElementById('user-input').innerText = `你说: "${transcript}"`;
         
+        // 只有识别到有效答案才进行处理
         if (userVal !== null) {
             handleAnswer(userVal, false);
         }
@@ -438,10 +475,8 @@
 
     function handleAnswer(value, isTimeout) {
         clearInterval(timerInterval);
-        isListening = false;
+        stopListening(); // 停止监听
         clearTimeout(micStartTimer);
-        
-        try { recognition.stop(); } catch(e) {} 
         window.speechSynthesis.cancel();
 
         const feedbackEl = document.getElementById('feedback');
@@ -472,8 +507,8 @@
 
     function endGame() {
         clearInterval(timerInterval);
+        stopListening();
         clearTimeout(micStartTimer);
-        try { recognition.stop(); } catch(e) {}
         window.speechSynthesis.cancel();
         playSound('end');
         
