@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (修正版)</title>
+    <title>20以内口算语音挑战 (高稳定性版)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -137,7 +137,7 @@
     <div class="result-msg" id="feedback"></div>
 
     <button class="btn" id="start-btn" onclick="startGame()">开始测试</button>
-    <div id="mic-status">请允许浏览器使用麦克风权限</div>
+    <div id="mic-status">首次启动需要麦克风权限，请点击允许。</div>
 </div>
 
 <script>
@@ -155,7 +155,7 @@
     let isListening = false;
     let recognition = null; 
     let audioCtx = null; 
-    let micStartTimer = null; // 用于延迟启动麦克风的计时器
+    let micStartTimer = null; 
 
     // 中文数字映射
     const cnNums = {
@@ -174,6 +174,8 @@
             recognition.lang = 'zh-CN';
             recognition.continuous = false;
             recognition.interimResults = false;
+            // 提高超时时间 (默认通常是 5s，设为 10s 匹配答题时间)
+            recognition.maxAlternatives = 1;
 
             recognition.onresult = function(event) {
                 const transcript = event.results[0][0].transcript;
@@ -182,17 +184,18 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
-                // 仅在非 'no-speech' 错误时，才显示错误，避免干扰
                 if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
                      document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
                 }
             };
             
-            // 【重要修正】: 减少对 onend 的依赖。让 handleAnswer 和 nextQuestion 流程控制 start/stop
+            // 【关键优化 1】: 强制重启逻辑
             recognition.onend = function() {
-                // 如果还在监听状态，尝试立即重新启动，确保持续监听
+                // 如果还在监听状态且时间未到，等待片刻后强制重启
                 if (isListening && timeLeft > 0) {
-                    try { recognition.start(); } catch(e) {}
+                    clearTimeout(micStartTimer);
+                    // 强制延迟 200ms 启动，防止资源冲突
+                    micStartTimer = setTimeout(startListening, 200); 
                 }
             };
 
@@ -206,13 +209,12 @@
     function startListening() {
         if (!recognition) return;
         isListening = true;
-        document.getElementById('user-input').innerText = "👂 正在听...";
-        document.getElementById('mic-status').innerText = "🎙️ 请说出答案";
+        document.getElementById('user-input').innerText = "👂 正在听... 请回答";
+        document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
         
         try {
             recognition.start();
         } catch(e) {
-            // 如果已经在听，start() 会报错。
             if (e.name !== 'InvalidStateError') {
                 console.error("Failed to start recognition:", e);
                 document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
@@ -222,7 +224,6 @@
 
     // ================= 语音朗读 (Text-to-Speech) =================
     function readQuestion(text) {
-        // 停止上一个朗读任务
         window.speechSynthesis.cancel(); 
         
         if ('speechSynthesis' in window) {
@@ -232,34 +233,34 @@
             utterance.lang = 'zh-CN';
             
             utterance.onend = () => {
-                // 读题结束后，延迟启动麦克风，防止资源冲突
+                // 【关键优化 2】: 延迟 1000ms 启动，给系统充足时间切换音频资源
                 clearTimeout(micStartTimer);
-                micStartTimer = setTimeout(startListening, 500); 
+                micStartTimer = setTimeout(startListening, 1000); 
             };
             utterance.onerror = () => {
-                // 如果朗读失败，也要启动麦克风
+                // 如果朗读失败，也要延迟启动麦克风
                 clearTimeout(micStartTimer);
-                micStartTimer = setTimeout(startListening, 500);
+                micStartTimer = setTimeout(startListening, 1000);
             };
 
             window.speechSynthesis.speak(utterance);
         } else {
-            // 如果不支持 TTS，直接启动麦克风
+            // 如果不支持 TTS，直接启动麦克风 (无延迟)
             startListening();
         }
     }
 
     // ================= 音效系统 (Web Audio API) =================
-    // (保持不变，省略代码以聚焦关键逻辑)
     function initAudio() {
         if (!audioCtx) {
+            // 必须在用户交互后初始化，startGame()中已调用
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
     }
 
     function playSound(type) {
         if (!audioCtx) initAudio();
-        // ... (原有的 playSound 逻辑)
+        
         const oscillator = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
         oscillator.connect(gainNode);
@@ -360,18 +361,18 @@
 
         currentQuestionIndex++;
         
-        // 1. 停止上一个监听周期（确保完全停止）
+        // 1. 停止上一个监听周期
         isListening = false;
         clearTimeout(micStartTimer);
         try { recognition.stop(); } catch(e) {}
-        window.speechSynthesis.cancel(); // 确保不干扰朗读
+        window.speechSynthesis.cancel();
 
         // 2. UI 更新 & 题目生成
         document.getElementById('main-box').style.backgroundColor = 'white';
         document.getElementById('progress').innerText = `题目: ${currentQuestionIndex} / ${MAX_QUESTIONS}`;
         document.getElementById('feedback').innerText = "";
         document.getElementById('user-input').innerText = "🔊 电脑正在读题...";
-        document.getElementById('mic-status').innerText = "请等待朗读结束";
+        document.getElementById('mic-status').innerText = "状态：等待朗读结束";
         
         let problem = generateMathProblem();
         currentAnswer = problem.result;
@@ -382,7 +383,7 @@
         void qBox.offsetWidth;
         qBox.classList.add('pop');
 
-        // 3. 重置计时器 (在读题时开始倒计时)
+        // 3. 重置计时器 
         timeLeft = TIME_LIMIT;
         document.getElementById('timer').innerText = `⏱️ ${timeLeft}s`;
         document.getElementById('timer').classList.remove('pulsating');
@@ -420,10 +421,7 @@
         isListening = false;
         clearTimeout(micStartTimer);
         
-        // 【重要修正】: 立即停止麦克风，防止计时器结束后仍然接收声音
         try { recognition.stop(); } catch(e) {} 
-        
-        // 停止朗读（如果正在朗读）
         window.speechSynthesis.cancel();
 
         const feedbackEl = document.getElementById('feedback');
@@ -440,7 +438,7 @@
             mainBox.style.backgroundColor = '#d5f5e3';
         } else {
             playSound('wrong');
-            score = Math.max(0, score - 1); // 答错扣一点点分，最低为0
+            score = Math.max(0, score - 1);
             feedbackEl.innerHTML = `<span class="wrong">不对哦! 答案是 ${currentAnswer} (-1分)</span>`;
             mainBox.classList.add('shake');
             setTimeout(()=>mainBox.classList.remove('shake'), 500);
