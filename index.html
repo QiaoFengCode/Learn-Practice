@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (带语音朗读)</title>
+    <title>20以内口算语音挑战 (修正版)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -153,8 +153,9 @@
     let timerInterval;
     let timeLeft = TIME_LIMIT;
     let isListening = false;
-    let recognition = null; // 语音识别对象
-    let audioCtx = null; // 音频上下文
+    let recognition = null; 
+    let audioCtx = null; 
+    let micStartTimer = null; // 用于延迟启动麦克风的计时器
 
     // 中文数字映射
     const cnNums = {
@@ -165,13 +166,13 @@
 
     // ================= 语音识别初始化 (只执行一次) =================
     function initSpeech() {
-        if (recognition) return; // 确保只初始化一次
+        if (recognition) return;
 
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
             recognition.lang = 'zh-CN';
-            recognition.continuous = false; // 每次识别到结果或超时会停止
+            recognition.continuous = false;
             recognition.interimResults = false;
 
             recognition.onresult = function(event) {
@@ -181,43 +182,75 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
+                // 仅在非 'no-speech' 错误时，才显示错误，避免干扰
+                if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
+                     document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
+                }
             };
             
-            // 每次识别停止后，如果还在答题时间内，则重新开启监听
+            // 【重要修正】: 减少对 onend 的依赖。让 handleAnswer 和 nextQuestion 流程控制 start/stop
             recognition.onend = function() {
+                // 如果还在监听状态，尝试立即重新启动，确保持续监听
                 if (isListening && timeLeft > 0) {
                     try { recognition.start(); } catch(e) {}
                 }
             };
+
         } else {
             alert("您的浏览器不支持语音识别，请使用Chrome或Edge浏览器。");
             document.getElementById('start-btn').disabled = true;
         }
     }
 
+    // 尝试启动麦克风
+    function startListening() {
+        if (!recognition) return;
+        isListening = true;
+        document.getElementById('user-input').innerText = "👂 正在听...";
+        document.getElementById('mic-status').innerText = "🎙️ 请说出答案";
+        
+        try {
+            recognition.start();
+        } catch(e) {
+            // 如果已经在听，start() 会报错。
+            if (e.name !== 'InvalidStateError') {
+                console.error("Failed to start recognition:", e);
+                document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
+            }
+        }
+    }
+
     // ================= 语音朗读 (Text-to-Speech) =================
-    function readQuestion(text, callback) {
+    function readQuestion(text) {
+        // 停止上一个朗读任务
+        window.speechSynthesis.cancel(); 
+        
         if ('speechSynthesis' in window) {
-            const synth = window.speechSynthesis;
-            // 将 '+' 替换为 '加'，'-' 替换为 '减'，以确保朗读自然
             const speakText = text.replace(/\+/g, '加').replace(/-/g, '减') + "等于多少?";
             
             const utterance = new SpeechSynthesisUtterance(speakText);
             utterance.lang = 'zh-CN';
             
-            // 确保读完后执行回调（启动麦克风）
-            utterance.onend = () => { if (callback) callback(); };
-            utterance.onerror = () => { if (callback) callback(); };
+            utterance.onend = () => {
+                // 读题结束后，延迟启动麦克风，防止资源冲突
+                clearTimeout(micStartTimer);
+                micStartTimer = setTimeout(startListening, 500); 
+            };
+            utterance.onerror = () => {
+                // 如果朗读失败，也要启动麦克风
+                clearTimeout(micStartTimer);
+                micStartTimer = setTimeout(startListening, 500);
+            };
 
-            synth.cancel(); // 停止任何正在进行的朗读
-            synth.speak(utterance);
+            window.speechSynthesis.speak(utterance);
         } else {
             // 如果不支持 TTS，直接启动麦克风
-            if (callback) callback();
+            startListening();
         }
     }
 
     // ================= 音效系统 (Web Audio API) =================
+    // (保持不变，省略代码以聚焦关键逻辑)
     function initAudio() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -226,7 +259,7 @@
 
     function playSound(type) {
         if (!audioCtx) initAudio();
-        
+        // ... (原有的 playSound 逻辑)
         const oscillator = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
         oscillator.connect(gainNode);
@@ -271,7 +304,6 @@
             });
         }
     }
-
     // ================= 核心逻辑 =================
 
     function parseNumber(str) {
@@ -289,7 +321,7 @@
 
     function startGame() {
         initAudio(); 
-        initSpeech(); // 确保语音识别对象已创建
+        initSpeech(); 
         score = 0;
         currentQuestionIndex = 0;
         document.getElementById('start-btn').style.display = 'none';
@@ -328,10 +360,12 @@
 
         currentQuestionIndex++;
         
-        // 1. 停止上一个监听周期
+        // 1. 停止上一个监听周期（确保完全停止）
         isListening = false;
+        clearTimeout(micStartTimer);
         try { recognition.stop(); } catch(e) {}
-        
+        window.speechSynthesis.cancel(); // 确保不干扰朗读
+
         // 2. UI 更新 & 题目生成
         document.getElementById('main-box').style.backgroundColor = 'white';
         document.getElementById('progress').innerText = `题目: ${currentQuestionIndex} / ${MAX_QUESTIONS}`;
@@ -368,14 +402,7 @@
         }, 1000);
 
         // 4. 读题，读完后启动麦克风监听
-        readQuestion(problem.expression, () => {
-            document.getElementById('user-input').innerText = "👂 正在听...";
-            document.getElementById('mic-status').innerText = "🎙️ 请说出答案";
-            isListening = true;
-            try { recognition.start(); } catch(e) {
-                console.error("Failed to start mic after TTS:", e);
-            }
-        });
+        readQuestion(problem.expression);
     }
 
     function processVoiceInput(transcript) {
@@ -391,8 +418,13 @@
         // 停止所有流程
         clearInterval(timerInterval);
         isListening = false;
-        try { recognition.stop(); } catch(e) {}
-        window.speechSynthesis.cancel(); // 停止朗读
+        clearTimeout(micStartTimer);
+        
+        // 【重要修正】: 立即停止麦克风，防止计时器结束后仍然接收声音
+        try { recognition.stop(); } catch(e) {} 
+        
+        // 停止朗读（如果正在朗读）
+        window.speechSynthesis.cancel();
 
         const feedbackEl = document.getElementById('feedback');
         const mainBox = document.getElementById('main-box');
@@ -408,7 +440,7 @@
             mainBox.style.backgroundColor = '#d5f5e3';
         } else {
             playSound('wrong');
-            score -= 1; // 答错扣一点点分，增加挑战性
+            score = Math.max(0, score - 1); // 答错扣一点点分，最低为0
             feedbackEl.innerHTML = `<span class="wrong">不对哦! 答案是 ${currentAnswer} (-1分)</span>`;
             mainBox.classList.add('shake');
             setTimeout(()=>mainBox.classList.remove('shake'), 500);
@@ -422,13 +454,14 @@
 
     function endGame() {
         clearInterval(timerInterval);
+        clearTimeout(micStartTimer);
         try { recognition.stop(); } catch(e) {}
         window.speechSynthesis.cancel();
         playSound('end');
         
         let comment = "";
         if(score === MAX_QUESTIONS * SCORE_PER_QUESTION) comment = "太神了！满分！🏆";
-        else if(score >= 80) comment = "非常棒！继续加油！🌟";
+        else if(score >= (MAX_QUESTIONS * SCORE_PER_QUESTION) * 0.8) comment = "非常棒！继续加油！🌟";
         else comment = "还需练习哦 💪";
 
         document.querySelector('.container').innerHTML = `
