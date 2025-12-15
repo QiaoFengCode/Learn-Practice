@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (重启加固版)</title>
+    <title>20以内口算语音挑战 (防循环加固版)</title>
     <style>
         /* (CSS样式保持不变，此处省略以节省篇幅) */
         body {
@@ -154,11 +154,14 @@
     let currentAnswer = 0;
     let timerInterval;
     let timeLeft = TIME_LIMIT;
-    let isListening = false; // 是否在答题时间中（核心状态）
+    let isListening = false; 
     let recognition = null; 
     let audioCtx = null; 
     let micStartTimer = null; 
-    let currentRecognitionStarted = false; // 麦克风 API 是否已调用 start()
+    let currentRecognitionStarted = false; 
+    
+    let restartCounter = 0; // 【新增】重启计数器
+    const MAX_RESTARTS = 3; // 【新增】最大重启次数限制
 
     // 中文数字映射
     const cnNums = {
@@ -172,19 +175,29 @@
         return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
 
-    /** 【新增】兜底自动重启函数 */
+    /** 【修改】兜底自动重启函数 */
     function autoRestart() {
-        // 只有在答题时间未结束，并且我们理论上还在监听状态时，才尝试重启
         if (isListening && timeLeft > 0) {
-            console.warn("Unexpected recognition end detected. Attempting restart...");
-            document.getElementById('mic-status').innerText = "🎙️ 监听中断，自动重启中...";
+            restartCounter++;
             
-            // 清理旧的延迟，并立即尝试重启
+            if (restartCounter >= MAX_RESTARTS) {
+                // 达到最大重启次数，停止并报错
+                console.error("Critical Error: Max restart attempts reached. Stopping auto-restart.");
+                document.getElementById('mic-status').innerHTML = '<span style="color:red;">🚨 麦克风无法稳定启动！请检查麦克风权限/硬件，并刷新页面。</span>';
+                isListening = false;
+                return;
+            }
+
+            console.warn(`Unexpected recognition end detected. Attempting restart ${restartCounter}/${MAX_RESTARTS}...`);
+            document.getElementById('mic-status').innerText = `🎙️ 监听中断，自动重启中... (${restartCounter}/${MAX_RESTARTS})`;
+            
+            // 【修改】重启延迟从 100ms 增加到 500ms
             clearTimeout(micStartTimer);
-            micStartTimer = setTimeout(startListening, 100); // 极短延迟重启
+            micStartTimer = setTimeout(startListening, 500); 
         } else {
-            // 如果 isListening=false，说明是 nextQuestion 或 handleAnswer 正常停止的
+            // 正常停止或已超时
             document.getElementById('mic-status').innerText = "🎙️ 状态：就绪";
+            restartCounter = 0; // 重置计数器
         }
     }
     
@@ -219,16 +232,15 @@
                 }
             };
             
-            // 【关键修改】: 将 onend 委托给 autoRestart
             recognition.onend = function() {
                 console.log("Recognition ended. Current status: isListening=" + isListening);
                 currentRecognitionStarted = false;
-                // 调用兜底重启逻辑
                 autoRestart(); 
             };
 
             recognition.onstart = function() {
                 currentRecognitionStarted = true;
+                restartCounter = 0; // 成功启动，重置计数器
                 document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
                 playReadyTone(); 
             };
@@ -243,7 +255,7 @@
     function stopListening() {
         if (!recognition || !currentRecognitionStarted) return;
         try {
-            // 在 stop 之前，将核心状态标记为 false，这样 onend 触发时就不会重启
+            // 在 stop 之前，将核心状态标记为 false，这样 onend 触发时就会进入“正常停止”逻辑
             isListening = false; 
             recognition.stop();
             currentRecognitionStarted = false; 
@@ -256,7 +268,11 @@
     /** 尝试启动麦克风 */
     function startListening() {
         if (!recognition) return;
-        if (currentRecognitionStarted) return; 
+        // 【修改】增加对 API 状态的检查，防止 InvalidStateError
+        if (currentRecognitionStarted || (recognition && recognition.readyState === recognition.STARTING)) {
+            console.warn("Recognition already starting or started. Aborting start attempt.");
+            return;
+        }
 
         isListening = true;
         document.getElementById('user-input').innerText = "👂 正在听... 请回答";
@@ -265,7 +281,11 @@
             clearTimeout(micStartTimer); 
             recognition.start();
         } catch(e) {
-            if (e.name !== 'InvalidStateError') {
+            if (e.name === 'InvalidStateError') {
+                console.warn("InvalidStateError on start. Retrying via autoRestart.");
+                // 如果是 InvalidStateError，也视为意外中断，尝试重启
+                recognition.onend(); 
+            } else {
                 console.error("Failed to start recognition:", e);
                 document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
             }
@@ -432,6 +452,9 @@
         stopListening();
         clearTimeout(micStartTimer);
         window.speechSynthesis.cancel();
+        
+        // 重置重启计数器
+        restartCounter = 0; 
 
         document.getElementById('main-box').style.backgroundColor = 'white';
         document.getElementById('progress').innerText = `题目: ${currentQuestionIndex} / ${MAX_QUESTIONS}`;
