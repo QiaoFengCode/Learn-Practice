@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (Continuous模式)</title>
+    <title>20以内口算语音挑战 (重启加固版)</title>
     <style>
         /* (CSS样式保持不变，此处省略以节省篇幅) */
         body {
@@ -145,8 +145,8 @@
     const MAX_QUESTIONS = 20;
     const TIME_LIMIT = 10;
     const SCORE_PER_QUESTION = 5;
-    const TTS_DELAY_MS_PC = 300;  // PC端启动延迟
-    const TTS_DELAY_MS_MOBILE = 1000; // 移动端启动延迟
+    const TTS_DELAY_MS_PC = 300;  
+    const TTS_DELAY_MS_MOBILE = 1000; 
 
     // ================= 状态变量 =================
     let currentQuestionIndex = 0;
@@ -154,11 +154,11 @@
     let currentAnswer = 0;
     let timerInterval;
     let timeLeft = TIME_LIMIT;
-    let isListening = false;
+    let isListening = false; // 是否在答题时间中（核心状态）
     let recognition = null; 
     let audioCtx = null; 
     let micStartTimer = null; 
-    let currentRecognitionStarted = false; // 标志位，用于避免重复启动
+    let currentRecognitionStarted = false; // 麦克风 API 是否已调用 start()
 
     // 中文数字映射
     const cnNums = {
@@ -171,6 +171,22 @@
     function isMobileDevice() {
         return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
+
+    /** 【新增】兜底自动重启函数 */
+    function autoRestart() {
+        // 只有在答题时间未结束，并且我们理论上还在监听状态时，才尝试重启
+        if (isListening && timeLeft > 0) {
+            console.warn("Unexpected recognition end detected. Attempting restart...");
+            document.getElementById('mic-status').innerText = "🎙️ 监听中断，自动重启中...";
+            
+            // 清理旧的延迟，并立即尝试重启
+            clearTimeout(micStartTimer);
+            micStartTimer = setTimeout(startListening, 100); // 极短延迟重启
+        } else {
+            // 如果 isListening=false，说明是 nextQuestion 或 handleAnswer 正常停止的
+            document.getElementById('mic-status').innerText = "🎙️ 状态：就绪";
+        }
+    }
     
     // ================= 语音识别初始化 (只执行一次) =================
     function initSpeech() {
@@ -182,20 +198,14 @@
             recognition.lang = 'zh-CN';
             recognition.interimResults = false;
             recognition.maxAlternatives = 1;
-
-            // 【关键优化 1】: 启用持续监听模式
             recognition.continuous = true; 
 
             recognition.onresult = function(event) {
-                // 在 Continuous 模式下，每次有结果时，会返回所有已识别片段
-                // 我们只需要处理最新的一个或最终结果
                 let finalTranscript = '';
-                // 遍历结果集，找到最终结果 (isFinal = true)
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
                         finalTranscript += event.results[i][0].transcript;
                         processVoiceInput(finalTranscript);
-                        // 发现最终结果后，我们应立即停止监听，以防识别下一题的答案
                         stopListening();
                         break; 
                     }
@@ -204,28 +214,23 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
-                // 仅显示非 'no-speech' 错误
                 if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
                      document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
                 }
             };
             
-            // 【关键优化 3】: 在 continuous 模式下，onend 意味着整个 session 结束或出错
-            // 此时不应进行自动重启，而是等待 nextQuestion 明确调用 startListening
+            // 【关键修改】: 将 onend 委托给 autoRestart
             recognition.onend = function() {
-                console.log("Recognition ended. Ready for next start.");
+                console.log("Recognition ended. Current status: isListening=" + isListening);
                 currentRecognitionStarted = false;
-                // 仅在计时器运行中，才显示提示，否则说明是正常结束
-                if (isListening && timeLeft > 0) {
-                     document.getElementById('mic-status').innerText = "🎙️ 监听意外中断，请重试";
-                }
-                isListening = false;
+                // 调用兜底重启逻辑
+                autoRestart(); 
             };
 
             recognition.onstart = function() {
                 currentRecognitionStarted = true;
                 document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
-                playReadyTone(); // 确保在真正启动后才播放提示音
+                playReadyTone(); 
             };
 
         } else {
@@ -238,9 +243,11 @@
     function stopListening() {
         if (!recognition || !currentRecognitionStarted) return;
         try {
+            // 在 stop 之前，将核心状态标记为 false，这样 onend 触发时就不会重启
+            isListening = false; 
             recognition.stop();
-            currentRecognitionStarted = false; // 标记已停止
-            isListening = false;
+            currentRecognitionStarted = false; 
+            document.getElementById('mic-status').innerText = "🎙️ 状态：已停止";
         } catch(e) {
              console.log("Error stopping recognition:", e);
         }
@@ -249,13 +256,12 @@
     /** 尝试启动麦克风 */
     function startListening() {
         if (!recognition) return;
-        if (currentRecognitionStarted) return; // 如果已经在听，不重复启动
+        if (currentRecognitionStarted) return; 
 
         isListening = true;
         document.getElementById('user-input').innerText = "👂 正在听... 请回答";
         
         try {
-            // 【关键优化 4】: 在开始前清理所有延时，防止冲突
             clearTimeout(micStartTimer); 
             recognition.start();
         } catch(e) {
@@ -422,7 +428,7 @@
 
         currentQuestionIndex++;
         
-        // 【关键】: 停止上一轮所有流程
+        // 停止上一轮所有流程
         stopListening();
         clearTimeout(micStartTimer);
         window.speechSynthesis.cancel();
@@ -467,7 +473,6 @@
         let userVal = parseNumber(transcript);
         document.getElementById('user-input').innerText = `你说: "${transcript}"`;
         
-        // 只有识别到有效答案才进行处理
         if (userVal !== null) {
             handleAnswer(userVal, false);
         }
