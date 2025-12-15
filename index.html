@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (高稳定性版)</title>
+    <title>20以内口算语音挑战 (最终健壮版)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -96,7 +96,6 @@
             color: #888;
         }
         
-        /* 动画效果 */
         .pulsating { animation: pulse 1s infinite; }
         @keyframes pulse {
             0% { transform: scale(1); color: #e74c3c; }
@@ -145,6 +144,8 @@
     const MAX_QUESTIONS = 20;
     const TIME_LIMIT = 10;
     const SCORE_PER_QUESTION = 5;
+    const TTS_DELAY_MS_PC = 300;  // PC端启动延迟
+    const TTS_DELAY_MS_MOBILE = 1000; // 移动端启动延迟
 
     // ================= 状态变量 =================
     let currentQuestionIndex = 0;
@@ -164,6 +165,11 @@
         '两': 2
     };
 
+    /** 辅助函数：判断是否为移动设备 */
+    function isMobileDevice() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    }
+    
     // ================= 语音识别初始化 (只执行一次) =================
     function initSpeech() {
         if (recognition) return;
@@ -174,7 +180,6 @@
             recognition.lang = 'zh-CN';
             recognition.continuous = false;
             recognition.interimResults = false;
-            // 提高超时时间 (默认通常是 5s，设为 10s 匹配答题时间)
             recognition.maxAlternatives = 1;
 
             recognition.onresult = function(event) {
@@ -184,18 +189,20 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
+                // 忽略 'no-speech' 错误，但如果发生 'network' 或 'audio-capture' 等错误，则通知用户
                 if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
                      document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
                 }
             };
             
-            // 【关键优化 1】: 强制重启逻辑
+            // 【优化 1】: 强制重启逻辑
             recognition.onend = function() {
-                // 如果还在监听状态且时间未到，等待片刻后强制重启
+                // 如果还在监听状态且时间未到，延迟后强制重启
                 if (isListening && timeLeft > 0) {
                     clearTimeout(micStartTimer);
-                    // 强制延迟 200ms 启动，防止资源冲突
-                    micStartTimer = setTimeout(startListening, 200); 
+                    // PC 端 100ms 重启，移动端 200ms 重启
+                    const restartDelay = isMobileDevice() ? 200 : 100;
+                    micStartTimer = setTimeout(startListening, restartDelay); 
                 }
             };
 
@@ -215,6 +222,7 @@
         try {
             recognition.start();
         } catch(e) {
+            // 捕获常见的 InvalidStateError (比如尝试启动已在运行的麦克风)
             if (e.name !== 'InvalidStateError') {
                 console.error("Failed to start recognition:", e);
                 document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
@@ -226,6 +234,9 @@
     function readQuestion(text) {
         window.speechSynthesis.cancel(); 
         
+        // 【优化 2】: 平台区分的延迟
+        const delay = isMobileDevice() ? TTS_DELAY_MS_MOBILE : TTS_DELAY_MS_PC;
+
         if ('speechSynthesis' in window) {
             const speakText = text.replace(/\+/g, '加').replace(/-/g, '减') + "等于多少?";
             
@@ -233,27 +244,25 @@
             utterance.lang = 'zh-CN';
             
             utterance.onend = () => {
-                // 【关键优化 2】: 延迟 1000ms 启动，给系统充足时间切换音频资源
                 clearTimeout(micStartTimer);
-                micStartTimer = setTimeout(startListening, 1000); 
+                micStartTimer = setTimeout(startListening, delay); 
             };
             utterance.onerror = () => {
-                // 如果朗读失败，也要延迟启动麦克风
                 clearTimeout(micStartTimer);
-                micStartTimer = setTimeout(startListening, 1000);
+                micStartTimer = setTimeout(startListening, delay);
             };
 
             window.speechSynthesis.speak(utterance);
         } else {
-            // 如果不支持 TTS，直接启动麦克风 (无延迟)
+            // 如果不支持 TTS，直接启动麦克风
             startListening();
         }
     }
 
     // ================= 音效系统 (Web Audio API) =================
+    // (保持不变，此处省略详细代码)
     function initAudio() {
         if (!audioCtx) {
-            // 必须在用户交互后初始化，startGame()中已调用
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
     }
@@ -361,13 +370,12 @@
 
         currentQuestionIndex++;
         
-        // 1. 停止上一个监听周期
+        // 【优化 4】: 严格停止所有资源
         isListening = false;
         clearTimeout(micStartTimer);
         try { recognition.stop(); } catch(e) {}
         window.speechSynthesis.cancel();
 
-        // 2. UI 更新 & 题目生成
         document.getElementById('main-box').style.backgroundColor = 'white';
         document.getElementById('progress').innerText = `题目: ${currentQuestionIndex} / ${MAX_QUESTIONS}`;
         document.getElementById('feedback').innerText = "";
@@ -383,7 +391,6 @@
         void qBox.offsetWidth;
         qBox.classList.add('pop');
 
-        // 3. 重置计时器 
         timeLeft = TIME_LIMIT;
         document.getElementById('timer').innerText = `⏱️ ${timeLeft}s`;
         document.getElementById('timer').classList.remove('pulsating');
@@ -402,7 +409,6 @@
             }
         }, 1000);
 
-        // 4. 读题，读完后启动麦克风监听
         readQuestion(problem.expression);
     }
 
@@ -416,11 +422,11 @@
     }
 
     function handleAnswer(value, isTimeout) {
-        // 停止所有流程
         clearInterval(timerInterval);
         isListening = false;
         clearTimeout(micStartTimer);
         
+        // 【优化 4】: 严格停止所有资源
         try { recognition.stop(); } catch(e) {} 
         window.speechSynthesis.cancel();
 
