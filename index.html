@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>20以内口算语音挑战 (带语音朗读)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f4f8;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            user-select: none;
+        }
+
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 400px;
+            max-width: 90%;
+            transition: background-color 0.3s;
+        }
+
+        h1 { color: #333; margin-bottom: 20px; font-size: 28px;}
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            color: #666;
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .question-box {
+            font-size: 56px;
+            font-weight: bold;
+            color: #2c3e50;
+            margin: 20px 0;
+            min-height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .timer-box {
+            font-size: 24px;
+            color: #e74c3c;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        .answer-display {
+            font-size: 20px;
+            color: #3498db;
+            min-height: 30px;
+            margin-bottom: 20px;
+            font-style: italic;
+        }
+
+        .btn {
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.1s, background-color 0.2s;
+        }
+
+        .btn:active { transform: scale(0.95); }
+        .btn:hover { background-color: #27ae60; }
+        .btn:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        .result-msg {
+            font-size: 28px;
+            font-weight: bold;
+            margin-top: 20px;
+            height: 40px;
+        }
+        
+        .correct { color: #2ecc71; }
+        .wrong { color: #e74c3c; }
+
+        #mic-status {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #888;
+        }
+        
+        /* 动画效果 */
+        .pulsating { animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0% { transform: scale(1); color: #e74c3c; }
+            50% { transform: scale(1.1); color: #c0392b; }
+            100% { transform: scale(1); color: #e74c3c; }
+        }
+
+        .shake { animation: shake 0.5s; }
+        @keyframes shake {
+            0% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            50% { transform: translateX(10px); }
+            75% { transform: translateX(-10px); }
+            100% { transform: translateX(0); }
+        }
+
+        .pop { animation: pop 0.3s; }
+        @keyframes pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container" id="main-box">
+    <h1>🔊 20以内口算挑战</h1>
+    
+    <div class="status-bar">
+        <span id="progress">题目: 0 / 20</span>
+        <span id="score">得分: 0</span>
+    </div>
+
+    <div class="timer-box" id="timer">准备开始</div>
+    <div class="question-box" id="question">?</div>
+    <div class="answer-display" id="user-input">点击按钮开始</div>
+    <div class="result-msg" id="feedback"></div>
+
+    <button class="btn" id="start-btn" onclick="startGame()">开始测试</button>
+    <div id="mic-status">请允许浏览器使用麦克风权限</div>
+</div>
+
+<script>
+    // ================= 配置区域 =================
+    const MAX_QUESTIONS = 20;
+    const TIME_LIMIT = 10;
+    const SCORE_PER_QUESTION = 5;
+
+    // ================= 状态变量 =================
+    let currentQuestionIndex = 0;
+    let score = 0;
+    let currentAnswer = 0;
+    let timerInterval;
+    let timeLeft = TIME_LIMIT;
+    let isListening = false;
+    let recognition = null; // 语音识别对象
+    let audioCtx = null; // 音频上下文
+
+    // 中文数字映射
+    const cnNums = {
+        '零':0, '一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9, '十':10,
+        '十一':11, '十二':12, '十三':13, '十四':14, '十五':15, '十六':16, '十七':17, '十八':18, '十九':19, '二十':20,
+        '两': 2
+    };
+
+    // ================= 语音识别初始化 (只执行一次) =================
+    function initSpeech() {
+        if (recognition) return; // 确保只初始化一次
+
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.lang = 'zh-CN';
+            recognition.continuous = false; // 每次识别到结果或超时会停止
+            recognition.interimResults = false;
+
+            recognition.onresult = function(event) {
+                const transcript = event.results[0][0].transcript;
+                processVoiceInput(transcript);
+            };
+
+            recognition.onerror = function(event) {
+                console.log("Speech error:", event.error);
+            };
+            
+            // 每次识别停止后，如果还在答题时间内，则重新开启监听
+            recognition.onend = function() {
+                if (isListening && timeLeft > 0) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            };
+        } else {
+            alert("您的浏览器不支持语音识别，请使用Chrome或Edge浏览器。");
+            document.getElementById('start-btn').disabled = true;
+        }
+    }
+
+    // ================= 语音朗读 (Text-to-Speech) =================
+    function readQuestion(text, callback) {
+        if ('speechSynthesis' in window) {
+            const synth = window.speechSynthesis;
+            // 将 '+' 替换为 '加'，'-' 替换为 '减'，以确保朗读自然
+            const speakText = text.replace(/\+/g, '加').replace(/-/g, '减') + "等于多少?";
+            
+            const utterance = new SpeechSynthesisUtterance(speakText);
+            utterance.lang = 'zh-CN';
+            
+            // 确保读完后执行回调（启动麦克风）
+            utterance.onend = () => { if (callback) callback(); };
+            utterance.onerror = () => { if (callback) callback(); };
+
+            synth.cancel(); // 停止任何正在进行的朗读
+            synth.speak(utterance);
+        } else {
+            // 如果不支持 TTS，直接启动麦克风
+            if (callback) callback();
+        }
+    }
+
+    // ================= 音效系统 (Web Audio API) =================
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    function playSound(type) {
+        if (!audioCtx) initAudio();
+        
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        const now = audioCtx.currentTime;
+
+        if (type === 'correct') {
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(500, now);
+            oscillator.frequency.exponentialRampToValueAtTime(1000, now + 0.1);
+            gainNode.gain.setValueAtTime(0.5, now);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+            oscillator.start(now);
+            oscillator.stop(now + 0.5);
+        } else if (type === 'wrong') {
+            oscillator.type = 'sawtooth';
+            oscillator.frequency.setValueAtTime(150, now);
+            oscillator.frequency.linearRampToValueAtTime(100, now + 0.3);
+            gainNode.gain.setValueAtTime(0.5, now);
+            gainNode.gain.linearRampToValueAtTime(0.01, now + 0.3);
+            oscillator.start(now);
+            oscillator.stop(now + 0.3);
+        } else if (type === 'tick') {
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(800, now);
+            gainNode.gain.setValueAtTime(0.05, now);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+            oscillator.start(now);
+            oscillator.stop(now + 0.05);
+        } else if (type === 'end') {
+            [0, 0.2, 0.4].forEach((offset, i) => {
+                const osc = audioCtx.createOscillator();
+                const gn = audioCtx.createGain();
+                osc.connect(gn);
+                gn.connect(audioCtx.destination);
+                osc.type = 'triangle';
+                osc.frequency.value = 400 + (i * 100);
+                gn.gain.setValueAtTime(0.3, now + offset);
+                gn.gain.linearRampToValueAtTime(0, now + offset + 0.3);
+                osc.start(now + offset);
+                osc.stop(now + offset + 0.3);
+            });
+        }
+    }
+
+    // ================= 核心逻辑 =================
+
+    function parseNumber(str) {
+        str = str.replace(/[。，？！]/g, '');
+        let num = parseInt(str);
+        if (!isNaN(num)) return num;
+        if (cnNums[str] !== undefined) return cnNums[str];
+        for (let key in cnNums) {
+            if (str.includes(key)) return cnNums[key];
+        }
+        let match = str.match(/\d+/);
+        if (match) return parseInt(match[0]);
+        return null;
+    }
+
+    function startGame() {
+        initAudio(); 
+        initSpeech(); // 确保语音识别对象已创建
+        score = 0;
+        currentQuestionIndex = 0;
+        document.getElementById('start-btn').style.display = 'none';
+        document.getElementById('score').innerText = `得分: ${score}`;
+        nextQuestion();
+    }
+
+    function generateMathProblem() {
+        let isChain = Math.random() > 0.7;
+        let num1 = Math.floor(Math.random() * 21);
+        let num2 = Math.floor(Math.random() * 21);
+        let op1 = Math.random() > 0.5 ? '+' : '-';
+        
+        let result = op1 === '+' ? num1 + num2 : num1 - num2;
+        let expression = `${num1} ${op1} ${num2}`;
+
+        if (result < 0 || result > 20) return generateMathProblem();
+
+        if (isChain) {
+            let num3 = Math.floor(Math.random() * 21);
+            let op2 = Math.random() > 0.5 ? '+' : '-';
+            let tempResult = op2 === '+' ? result + num3 : result - num3;
+            
+            if (tempResult < 0 || tempResult > 20) return generateMathProblem();
+            result = tempResult;
+            expression += ` ${op2} ${num3}`;
+        }
+        return { expression, result };
+    }
+
+    function nextQuestion() {
+        if (currentQuestionIndex >= MAX_QUESTIONS) {
+            endGame();
+            return;
+        }
+
+        currentQuestionIndex++;
+        
+        // 1. 停止上一个监听周期
+        isListening = false;
+        try { recognition.stop(); } catch(e) {}
+        
+        // 2. UI 更新 & 题目生成
+        document.getElementById('main-box').style.backgroundColor = 'white';
+        document.getElementById('progress').innerText = `题目: ${currentQuestionIndex} / ${MAX_QUESTIONS}`;
+        document.getElementById('feedback').innerText = "";
+        document.getElementById('user-input').innerText = "🔊 电脑正在读题...";
+        document.getElementById('mic-status').innerText = "请等待朗读结束";
+        
+        let problem = generateMathProblem();
+        currentAnswer = problem.result;
+        
+        const qBox = document.getElementById('question');
+        qBox.innerText = `${problem.expression} = ?`;
+        qBox.classList.remove('pop');
+        void qBox.offsetWidth;
+        qBox.classList.add('pop');
+
+        // 3. 重置计时器 (在读题时开始倒计时)
+        timeLeft = TIME_LIMIT;
+        document.getElementById('timer').innerText = `⏱️ ${timeLeft}s`;
+        document.getElementById('timer').classList.remove('pulsating');
+        clearInterval(timerInterval);
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            document.getElementById('timer').innerText = `⏱️ ${timeLeft}s`;
+            
+            if (timeLeft <= 3 && timeLeft > 0) {
+                document.getElementById('timer').classList.add('pulsating');
+                playSound('tick');
+            }
+
+            if (timeLeft <= 0) {
+                handleAnswer(null, true);
+            }
+        }, 1000);
+
+        // 4. 读题，读完后启动麦克风监听
+        readQuestion(problem.expression, () => {
+            document.getElementById('user-input').innerText = "👂 正在听...";
+            document.getElementById('mic-status').innerText = "🎙️ 请说出答案";
+            isListening = true;
+            try { recognition.start(); } catch(e) {
+                console.error("Failed to start mic after TTS:", e);
+            }
+        });
+    }
+
+    function processVoiceInput(transcript) {
+        let userVal = parseNumber(transcript);
+        document.getElementById('user-input').innerText = `你说: "${transcript}"`;
+        
+        if (userVal !== null) {
+            handleAnswer(userVal, false);
+        }
+    }
+
+    function handleAnswer(value, isTimeout) {
+        // 停止所有流程
+        clearInterval(timerInterval);
+        isListening = false;
+        try { recognition.stop(); } catch(e) {}
+        window.speechSynthesis.cancel(); // 停止朗读
+
+        const feedbackEl = document.getElementById('feedback');
+        const mainBox = document.getElementById('main-box');
+        
+        if (isTimeout) {
+            playSound('wrong');
+            feedbackEl.innerHTML = `<span class="wrong">超时了! 答案是 ${currentAnswer}</span>`;
+            mainBox.style.backgroundColor = '#fdeea6';
+        } else if (value === currentAnswer) {
+            playSound('correct');
+            score += SCORE_PER_QUESTION;
+            feedbackEl.innerHTML = `<span class="correct">回答正确! +${SCORE_PER_QUESTION}分</span>`;
+            mainBox.style.backgroundColor = '#d5f5e3';
+        } else {
+            playSound('wrong');
+            score -= 1; // 答错扣一点点分，增加挑战性
+            feedbackEl.innerHTML = `<span class="wrong">不对哦! 答案是 ${currentAnswer} (-1分)</span>`;
+            mainBox.classList.add('shake');
+            setTimeout(()=>mainBox.classList.remove('shake'), 500);
+            mainBox.style.backgroundColor = '#fadbd8';
+        }
+
+        document.getElementById('score').innerText = `得分: ${score}`;
+
+        setTimeout(nextQuestion, 2000);
+    }
+
+    function endGame() {
+        clearInterval(timerInterval);
+        try { recognition.stop(); } catch(e) {}
+        window.speechSynthesis.cancel();
+        playSound('end');
+        
+        let comment = "";
+        if(score === MAX_QUESTIONS * SCORE_PER_QUESTION) comment = "太神了！满分！🏆";
+        else if(score >= 80) comment = "非常棒！继续加油！🌟";
+        else comment = "还需练习哦 💪";
+
+        document.querySelector('.container').innerHTML = `
+            <h1>🎉 测试完成!</h1>
+            <div style="font-size:60px; color:#2c3e50; margin:20px 0;">${score}分</div>
+            <p style="font-size:20px; color:#666;">${comment}</p>
+            <button class="btn" onclick="location.reload()">再玩一次</button>
+        `;
+    }
+</script>
+
+</body>
+</html>
