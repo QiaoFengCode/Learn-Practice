@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (最终健壮版)</title>
+    <title>20以内口算语音挑战 (提示音版)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -189,18 +189,14 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
-                // 忽略 'no-speech' 错误，但如果发生 'network' 或 'audio-capture' 等错误，则通知用户
                 if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
                      document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
                 }
             };
             
-            // 【优化 1】: 强制重启逻辑
             recognition.onend = function() {
-                // 如果还在监听状态且时间未到，延迟后强制重启
                 if (isListening && timeLeft > 0) {
                     clearTimeout(micStartTimer);
-                    // PC 端 100ms 重启，移动端 200ms 重启
                     const restartDelay = isMobileDevice() ? 200 : 100;
                     micStartTimer = setTimeout(startListening, restartDelay); 
                 }
@@ -212,6 +208,27 @@
         }
     }
 
+    /** 🔊 播放开始回答提示音 */
+    function playReadyTone() {
+        if (!audioCtx) initAudio();
+        const now = audioCtx.currentTime;
+        const duration = 0.1;
+        
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(1200, now); // 高频提示音
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+        oscillator.start(now);
+        oscillator.stop(now + duration);
+    }
+
     // 尝试启动麦克风
     function startListening() {
         if (!recognition) return;
@@ -219,10 +236,12 @@
         document.getElementById('user-input').innerText = "👂 正在听... 请回答";
         document.getElementById('mic-status').innerText = "🎙️ 状态：激活中";
         
+        // 【新功能】: 播放提示音
+        playReadyTone();
+
         try {
             recognition.start();
         } catch(e) {
-            // 捕获常见的 InvalidStateError (比如尝试启动已在运行的麦克风)
             if (e.name !== 'InvalidStateError') {
                 console.error("Failed to start recognition:", e);
                 document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
@@ -234,7 +253,6 @@
     function readQuestion(text) {
         window.speechSynthesis.cancel(); 
         
-        // 【优化 2】: 平台区分的延迟
         const delay = isMobileDevice() ? TTS_DELAY_MS_MOBILE : TTS_DELAY_MS_PC;
 
         if ('speechSynthesis' in window) {
@@ -254,13 +272,11 @@
 
             window.speechSynthesis.speak(utterance);
         } else {
-            // 如果不支持 TTS，直接启动麦克风
             startListening();
         }
     }
 
     // ================= 音效系统 (Web Audio API) =================
-    // (保持不变，此处省略详细代码)
     function initAudio() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -314,7 +330,7 @@
             });
         }
     }
-    // ================= 核心逻辑 =================
+    // ================= 核心逻辑 (保持与上一个版本一致) =================
 
     function parseNumber(str) {
         str = str.replace(/[。，？！]/g, '');
@@ -370,7 +386,6 @@
 
         currentQuestionIndex++;
         
-        // 【优化 4】: 严格停止所有资源
         isListening = false;
         clearTimeout(micStartTimer);
         try { recognition.stop(); } catch(e) {}
@@ -426,7 +441,6 @@
         isListening = false;
         clearTimeout(micStartTimer);
         
-        // 【优化 4】: 严格停止所有资源
         try { recognition.stop(); } catch(e) {} 
         window.speechSynthesis.cancel();
 
