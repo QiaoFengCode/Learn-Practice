@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (稳定增强版)</title>
+    <title>20以内口算语音挑战 (权限增强版)</title>
     <style>
-        /* CSS样式保持不变，确保美观和响应性 */
+        /* (CSS样式保持不变，此处省略以节省篇幅) */
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f0f4f8;
@@ -147,7 +147,7 @@
     const SCORE_PER_QUESTION = 5;
     const TTS_DELAY_MS_PC = 300;  
     const TTS_DELAY_MS_MOBILE = 1500; 
-    const MIC_RESTART_DELAY = 500; // 麦克风重启延迟
+    const MIC_RESTART_DELAY = 500; 
     
     // ================= 状态变量 =================
     let currentQuestionIndex = 0;
@@ -155,14 +155,14 @@
     let currentAnswer = 0;
     let timerInterval;
     let timeLeft = TIME_LIMIT;
-    let isListening = false; // 核心状态：是否应该处于监听状态（答题时间内）
+    let isListening = false; 
     let recognition = null; 
     let audioCtx = null; 
     let micStartTimer = null; 
-    let currentRecognitionStarted = false; // 麦克风 API 是否已调用 start()
+    let currentRecognitionStarted = false; 
     
-    let restartCounter = 0; // 重启计数器
-    const MAX_RESTARTS = 3; // 最大重启次数限制
+    let restartCounter = 0; 
+    const MAX_RESTARTS = 3; 
 
     // 中文数字映射
     const cnNums = {
@@ -176,31 +176,27 @@
         return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
     
-    /** 【核心】兜底自动重启函数，用于解决意外中断 */
+    /** 兜底自动重启函数 */
     function autoRestart() {
-        // 只有在答题时间未结束，并且我们理论上还在监听状态时，才尝试重启
         if (isListening && timeLeft > 0) {
             restartCounter++;
             
             if (restartCounter >= MAX_RESTARTS) {
-                // 达到最大重启次数，判定为环境不支持或权限永久拒绝
                 console.error("Critical Error: Max restart attempts reached. Stopping auto-restart.");
-                document.getElementById('mic-status').innerHTML = '<span style="color:red;">🚨 麦克风无法稳定启动！请检查麦克风权限/硬件，并刷新页面。</span>';
+                document.getElementById('mic-status').innerHTML = '<span style="color:red;">🚨 错误：麦克风无法稳定启动！请检查浏览器地址栏的麦克风权限图标。</span>';
                 isListening = false;
-                clearInterval(timerInterval); // 停止计时器，终止答题流程
+                clearInterval(timerInterval);
                 return;
             }
 
             console.warn(`Unexpected recognition end detected. Attempting restart ${restartCounter}/${MAX_RESTARTS}...`);
             document.getElementById('mic-status').innerText = `🎙️ 监听中断，自动重启中... (${restartCounter}/${MAX_RESTARTS})`;
             
-            // 引入延迟，给浏览器时间释放资源
             clearTimeout(micStartTimer);
             micStartTimer = setTimeout(startListening, MIC_RESTART_DELAY); 
         } else {
-            // 正常停止或已超时
             document.getElementById('mic-status').innerText = "🎙️ 状态：就绪";
-            restartCounter = 0; // 重置计数器
+            restartCounter = 0; 
         }
     }
     
@@ -208,14 +204,13 @@
     function initSpeech() {
         if (recognition) return;
 
-        // 兼容不同的浏览器前缀
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
             recognition.lang = 'zh-CN';
             recognition.interimResults = false;
             recognition.maxAlternatives = 1;
-            recognition.continuous = true; // 开启连续模式，减少中断
+            recognition.continuous = true; 
 
             recognition.onresult = function(event) {
                 let finalTranscript = '';
@@ -223,7 +218,6 @@
                     if (event.results[i].isFinal) {
                         finalTranscript += event.results[i][0].transcript;
                         processVoiceInput(finalTranscript);
-                        // 注意：Webkit API 必须手动停止，否则会一直占用麦克风
                         stopListening(); 
                         break; 
                     }
@@ -233,21 +227,21 @@
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
                 if (event.error === 'not-allowed' || event.error === 'permission-denied') {
-                    document.getElementById('mic-status').innerHTML = '<span style="color:red;">🚨 启动失败：请授予麦克风权限！</span>';
-                    stopListening(true); // 彻底停止，不尝试重启
-                } else if (event.error !== 'no-speech' && event.error !== 'audio-capture') {
-                     document.getElementById('mic-status').innerText = "麦克风出错: " + event.error;
+                    // 【权限拒绝】立即给出明确提示
+                    document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 权限被拒！请点击地址栏的麦克风图标启用。</span>';
+                    stopListening(true); 
+                } else if (event.error === 'no-speech') {
+                    // 解决无语音输入导致的中断，让 autoRestart 处理重启
+                    document.getElementById('mic-status').innerText = "🎙️ 未检测到语音，正在重试...";
                 }
+                // 确保在任何错误后，onend 都会被调用，从而触发 autoRestart
             };
             
-            // 识别停止时（无论是意外中断还是主动停止）
             recognition.onend = function() {
-                console.log("Recognition ended. Current status: isListening=" + isListening);
                 currentRecognitionStarted = false;
                 autoRestart(); 
             };
 
-            // 识别启动时
             recognition.onstart = function() {
                 currentRecognitionStarted = true;
                 restartCounter = 0; 
@@ -265,7 +259,6 @@
     function stopListening(force = false) {
         if (!recognition || !currentRecognitionStarted) return;
         try {
-            // 在 stop 之前，将核心状态标记为 false，这样 onend 触发时就不会重启
             isListening = false; 
             recognition.stop();
             currentRecognitionStarted = false; 
@@ -282,7 +275,6 @@
     /** 尝试启动麦克风 */
     function startListening() {
         if (!recognition) return;
-        // 增加对 API 状态的检查，防止 InvalidStateError
         if (currentRecognitionStarted || (recognition && recognition.readyState === recognition.STARTING)) {
             console.warn("Recognition already starting or started. Aborting start attempt.");
             return;
@@ -295,18 +287,24 @@
             clearTimeout(micStartTimer); 
             recognition.start();
         } catch(e) {
+            // 捕获权限被拒或状态错误
             if (e.name === 'InvalidStateError') {
-                console.warn("InvalidStateError on start. Retrying via autoRestart.");
-                // 立即触发 onend，让 autoRestart 机制接管
+                // 如果是状态错误，尝试重启
                 recognition.onend(); 
+            } else if (e.name === 'SecurityError') {
+                // 权限被阻止，直接报错
+                document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 权限被拒！请点击地址栏的麦克风图标启用。</span>';
+                stopListening(true);
             } else {
                 console.error("Failed to start recognition:", e);
                 document.getElementById('mic-status').innerText = "启动麦克风失败，请检查权限。";
             }
         }
     }
-
-    // ================= 语音朗读 (Text-to-Speech) =================
+    
+    // ================= (TTS, Audio, 核心逻辑代码保持不变，此处省略以节省篇幅) =================
+    
+    // [TTS code: readQuestion]
     function readQuestion(text) {
         window.speechSynthesis.cancel(); 
         
@@ -318,7 +316,6 @@
             const utterance = new SpeechSynthesisUtterance(speakText);
             utterance.lang = 'zh-CN';
             
-            // 朗读结束或出错后，开始监听
             utterance.onend = () => {
                 micStartTimer = setTimeout(startListening, delay); 
             };
@@ -332,8 +329,7 @@
         }
     }
     
-    // ================= 音效系统 (Web Audio API) =================
-
+    // [Audio Code: initAudio, playSound, playReadyTone]
     function initAudio() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -407,8 +403,8 @@
         oscillator.start(now);
         oscillator.stop(now + duration);
     }
-
-    // ================= 核心逻辑 =================
+    
+    // [Core Logic: parseNumber, startGame, generateMathProblem, nextQuestion, processVoiceInput, handleAnswer, endGame]
 
     function parseNumber(str) {
         str = str.replace(/[。，？！]/g, '');
@@ -464,12 +460,10 @@
 
         currentQuestionIndex++;
         
-        // 停止上一轮所有流程
         stopListening();
         clearTimeout(micStartTimer);
         window.speechSynthesis.cancel();
         
-        // 重置重启计数器
         restartCounter = 0; 
 
         document.getElementById('main-box').style.backgroundColor = 'white';
@@ -519,7 +513,7 @@
 
     function handleAnswer(value, isTimeout) {
         clearInterval(timerInterval);
-        stopListening(); // 停止监听
+        stopListening(); 
         clearTimeout(micStartTimer);
         window.speechSynthesis.cancel();
 
