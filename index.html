@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (权限增强版)</title>
+    <title>20以内口算语音挑战 (TTS/ASR稳定增强版)</title>
     <style>
         /* (CSS样式保持不变，此处省略以节省篇幅) */
         body {
@@ -146,7 +146,7 @@
     const TIME_LIMIT = 10;
     const SCORE_PER_QUESTION = 5;
     const TTS_DELAY_MS_PC = 300;  
-    const TTS_DELAY_MS_MOBILE = 1500; 
+    const TTS_DELAY_MS_MOBILE = 1500; // 移动端延迟加长，确保TTS资源释放
     const MIC_RESTART_DELAY = 500; 
     
     // ================= 状态变量 =================
@@ -183,7 +183,7 @@
             
             if (restartCounter >= MAX_RESTARTS) {
                 console.error("Critical Error: Max restart attempts reached. Stopping auto-restart.");
-                document.getElementById('mic-status').innerHTML = '<span style="color:red;">🚨 错误：麦克风无法稳定启动！请检查浏览器地址栏的麦克风权限图标。</span>';
+                document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 错误：麦克风无法稳定启动！请检查浏览器地址栏的麦克风权限图标。</span>';
                 isListening = false;
                 clearInterval(timerInterval);
                 return;
@@ -200,7 +200,7 @@
         }
     }
     
-    // ================= 语音识别初始化 (只执行一次) =================
+    // ================= 语音识别初始化 =================
     function initSpeech() {
         if (recognition) return;
 
@@ -226,15 +226,13 @@
 
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
-                if (event.error === 'not-allowed' || event.error === 'permission-denied') {
+                if (event.error === 'not-allowed' || event.error === 'permission-denied' || event.error === 'security') {
                     // 【权限拒绝】立即给出明确提示
                     document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 权限被拒！请点击地址栏的麦克风图标启用。</span>';
                     stopListening(true); 
                 } else if (event.error === 'no-speech') {
-                    // 解决无语音输入导致的中断，让 autoRestart 处理重启
                     document.getElementById('mic-status').innerText = "🎙️ 未检测到语音，正在重试...";
                 }
-                // 确保在任何错误后，onend 都会被调用，从而触发 autoRestart
             };
             
             recognition.onend = function() {
@@ -287,12 +285,9 @@
             clearTimeout(micStartTimer); 
             recognition.start();
         } catch(e) {
-            // 捕获权限被拒或状态错误
             if (e.name === 'InvalidStateError') {
-                // 如果是状态错误，尝试重启
                 recognition.onend(); 
             } else if (e.name === 'SecurityError') {
-                // 权限被阻止，直接报错
                 document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 权限被拒！请点击地址栏的麦克风图标启用。</span>';
                 stopListening(true);
             } else {
@@ -302,11 +297,12 @@
         }
     }
     
-    // ================= (TTS, Audio, 核心逻辑代码保持不变，此处省略以节省篇幅) =================
-    
-    // [TTS code: readQuestion]
+    // ================= 语音朗读 (Text-to-Speech) - 修正核心 =================
     function readQuestion(text) {
-        window.speechSynthesis.cancel(); 
+        // 【关键修正】强制取消所有正在排队的朗读任务，确保TTS引擎释放资源
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel(); 
+        }
         
         const delay = isMobileDevice() ? TTS_DELAY_MS_MOBILE : TTS_DELAY_MS_PC;
 
@@ -316,20 +312,36 @@
             const utterance = new SpeechSynthesisUtterance(speakText);
             utterance.lang = 'zh-CN';
             
+            // 朗读结束或出错后，启动监听
             utterance.onend = () => {
                 micStartTimer = setTimeout(startListening, delay); 
             };
             utterance.onerror = () => {
+                // 如果朗读出错（例如找不到TTS语音包），也不能卡住，必须继续启动ASR
                 micStartTimer = setTimeout(startListening, delay);
             };
 
-            window.speechSynthesis.speak(utterance);
+            // 检查是否有可用的声音，否则直接启动ASR（防止卡住）
+            const voices = window.speechSynthesis.getVoices();
+            const chineseVoice = voices.find(voice => voice.lang === 'zh-CN');
+            
+            if (chineseVoice) {
+                utterance.voice = chineseVoice;
+                window.speechSynthesis.speak(utterance);
+            } else {
+                // 如果没有中文TTS声音，跳过TTS朗读，直接启动麦克风
+                console.warn("No Chinese TTS voice found. Skipping speaking.");
+                document.getElementById('user-input').innerText = "🔊 朗读跳过，请直接回答";
+                micStartTimer = setTimeout(startListening, delay);
+            }
         } else {
+            // 浏览器不支持TTS，直接启动ASR
+            document.getElementById('user-input').innerText = "🔊 朗读跳过，请直接回答";
             micStartTimer = setTimeout(startListening, delay);
         }
     }
     
-    // [Audio Code: initAudio, playSound, playReadyTone]
+    // ================= 音效系统 (Web Audio API) =================
     function initAudio() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -403,8 +415,8 @@
         oscillator.start(now);
         oscillator.stop(now + duration);
     }
-    
-    // [Core Logic: parseNumber, startGame, generateMathProblem, nextQuestion, processVoiceInput, handleAnswer, endGame]
+
+    // ================= 核心逻辑 =================
 
     function parseNumber(str) {
         str = str.replace(/[。，？！]/g, '');
