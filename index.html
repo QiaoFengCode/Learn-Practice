@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>20以内口算语音挑战 (TTS/ASR稳定增强版)</title>
+    <title>20以内口算语音挑战 (移动端稳定版)</title>
     <style>
-        /* (CSS样式保持不变，此处省略以节省篇幅) */
+        /* CSS样式确保美观和响应性 */
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f0f4f8;
@@ -146,7 +146,7 @@
     const TIME_LIMIT = 10;
     const SCORE_PER_QUESTION = 5;
     const TTS_DELAY_MS_PC = 300;  
-    const TTS_DELAY_MS_MOBILE = 1500; // 移动端延迟加长，确保TTS资源释放
+    const TTS_DELAY_MS_MOBILE = 1500; // 移动端延迟加长
     const MIC_RESTART_DELAY = 500; 
     
     // ================= 状态变量 =================
@@ -200,7 +200,7 @@
         }
     }
     
-    // ================= 语音识别初始化 =================
+    // ================= 语音识别初始化 (Web Speech API) =================
     function initSpeech() {
         if (recognition) return;
 
@@ -227,10 +227,10 @@
             recognition.onerror = function(event) {
                 console.log("Speech error:", event.error);
                 if (event.error === 'not-allowed' || event.error === 'permission-denied' || event.error === 'security') {
-                    // 【权限拒绝】立即给出明确提示
                     document.getElementById('mic-status').innerHTML = '<span style="color:red; font-weight:bold;">🚨 权限被拒！请点击地址栏的麦克风图标启用。</span>';
                     stopListening(true); 
                 } else if (event.error === 'no-speech') {
+                    // 没有检测到语音，让 autoRestart 机制处理
                     document.getElementById('mic-status').innerText = "🎙️ 未检测到语音，正在重试...";
                 }
             };
@@ -297,9 +297,9 @@
         }
     }
     
-    // ================= 语音朗读 (Text-to-Speech) - 修正核心 =================
+    // ================= 语音朗读 (Text-to-Speech) - 确保资源释放 =================
     function readQuestion(text) {
-        // 【关键修正】强制取消所有正在排队的朗读任务，确保TTS引擎释放资源
+        // 强制取消所有正在排队的朗读任务
         if (window.speechSynthesis) {
             window.speechSynthesis.cancel(); 
         }
@@ -312,38 +312,37 @@
             const utterance = new SpeechSynthesisUtterance(speakText);
             utterance.lang = 'zh-CN';
             
-            // 朗读结束或出错后，启动监听
             utterance.onend = () => {
                 micStartTimer = setTimeout(startListening, delay); 
             };
             utterance.onerror = () => {
-                // 如果朗读出错（例如找不到TTS语音包），也不能卡住，必须继续启动ASR
+                // 朗读出错时，也要继续启动语音识别，防止流程卡死
                 micStartTimer = setTimeout(startListening, delay);
             };
 
-            // 检查是否有可用的声音，否则直接启动ASR（防止卡住）
             const voices = window.speechSynthesis.getVoices();
-            const chineseVoice = voices.find(voice => voice.lang === 'zh-CN');
+            // 尝试寻找中文声音，如果没有，可能会使用默认声音或跳过
+            const chineseVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.startsWith('zh')); 
             
             if (chineseVoice) {
                 utterance.voice = chineseVoice;
                 window.speechSynthesis.speak(utterance);
             } else {
-                // 如果没有中文TTS声音，跳过TTS朗读，直接启动麦克风
-                console.warn("No Chinese TTS voice found. Skipping speaking.");
+                console.warn("No suitable Chinese TTS voice found. Skipping speaking.");
                 document.getElementById('user-input').innerText = "🔊 朗读跳过，请直接回答";
                 micStartTimer = setTimeout(startListening, delay);
             }
         } else {
-            // 浏览器不支持TTS，直接启动ASR
             document.getElementById('user-input').innerText = "🔊 朗读跳过，请直接回答";
             micStartTimer = setTimeout(startListening, delay);
         }
     }
     
     // ================= 音效系统 (Web Audio API) =================
+
     function initAudio() {
         if (!audioCtx) {
+            // 在用户交互后初始化 AudioContext
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
     }
